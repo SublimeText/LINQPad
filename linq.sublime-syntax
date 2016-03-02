@@ -1,0 +1,39 @@
+%YAML 1.2
+---
+name: LINQPad
+file_extensions: 
+  - linq
+scope: source.linqpad # https://www.linqpad.net/
+first_line_match: '^<Query Kind="[^"]+">$'
+contexts:
+  main:
+    - match: '^(?=<Query Kind="(?:SQL|ESQL)")'
+      push: scope:text.xml
+      with_prototype:
+        - match: (?<=</Query>)$
+          set: scope:source.sql
+    - match: '^(?=<Query Kind="(?:Expression|Statements|Program)")'
+      push: scope:text.xml
+      with_prototype:
+        - match: (?<=</Query>)$
+          set: scope:source.cs
+    - match: '^(?=<Query Kind="VB[^"]+")'
+      push: scope:text.xml
+      with_prototype:
+        - match: (?<=</Query>)$
+          set: scope:source.vbnet # https://packagecontrol.io/packages/VBDotNet
+    - match: '^(?=<Query Kind="FSharp[^"]+")'
+      push: scope:text.xml
+      with_prototype:
+        - match: (?<=</Query>)$
+          set: scope:source.fsharp # https://packagecontrol.io/packages/F%23
+    - match: '' # anything else
+      push: scope:text.xml # treat the xml as xml and the rest as invalid / plain text
+      with_prototype:
+        - match: '(?<=<Query Kind=")[^"]*'
+          scope: invalid.illegal.unrecognized.querykind
+        - match: (?<=</Query>)$
+          set: unrecognized
+  unrecognized:
+    - match: '.+'
+      scope: invalid.illegal.unknown_syntax text.plain
