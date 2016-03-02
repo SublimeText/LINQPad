@@ -1,0 +1,23 @@
+{
+    "selector": "source.linqpad",
+    "file_regex": "^(.+?\\.linq)\\((\\d+),(\\d+)\\):\\s+(.*)$", // known problem with no known workaround: line number reported begins after </Query>
+    
+    "cmd": ["lprun", "-format=text", "$file"],
+    "syntax": "scope:source.json",
+    
+    "variants": [
+        
+        {
+            "name": "Output CSV",
+            "cmd": ["lprun", "-format=csv", "$file"],
+            "syntax": "scope:text.advanced_csv"
+        },
+        
+        {
+            "name": "Compile Only",
+            "cmd": ["lprun", "-warn", "-compileonly", "$file"],
+            "syntax": "scope:text.plain"
+        }
+        
+    ]
+}
