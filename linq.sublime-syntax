@@ -12,11 +12,21 @@ contexts:
       with_prototype:
         - match: (?<=</Query>)$
           set: scope:source.sql
+    - match: '^(?=<Query Kind="(?:Expression|Statements|Program)"\s*/>)'
+      push: scope:text.xml
+      with_prototype:
+        - match: (?<=/>)$
+          set: scope:source.cs
     - match: '^(?=<Query Kind="(?:Expression|Statements|Program)")'
       push: scope:text.xml
       with_prototype:
         - match: (?<=</Query>)$
           set: scope:source.cs
+    - match: '^(?=<Query Kind="VB[^"]+"\s*/>)'
+      push: scope:text.xml
+      with_prototype:
+        - match: (?<=/>)$
+          set: scope:source.vbnet # https://packagecontrol.io/packages/VBDotNet
     - match: '^(?=<Query Kind="VB[^"]+")'
       push: scope:text.xml
       with_prototype:
