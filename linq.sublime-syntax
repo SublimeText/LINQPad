@@ -64,7 +64,7 @@ contexts:
       captures:
         0: text.xml meta.tag.xml
         1: punctuation.definition.tag.end.xml
-      set: [pop_me, scope:text.xml] # pop_me will ensure that the xml scope is popped when the prototype pops the scope:text.xml scope
+      set: [pop_me, scope:text.xml] # pop_me will ensure that the xml context is popped when the prototype pops the scope:text.xml context
       with_prototype:
         - include: close_query_tag
   pop_me:
