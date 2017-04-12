@@ -16,9 +16,11 @@
 #       ^ source.linqpad source.cs - text.xml
 
 // comment
-# <- source.linqpad source.cs comment.line.double-slash.source.cs
-# punctuation.definition.comment.source.cs
+# <- source.linqpad source.cs comment.line.double-slash.cs punctuation.definition.comment.cs
 var test = "Test".IndexOf("e") + 1;
-#           ^ source.linqpad source.cs string.quoted.double.source.cs
-#                            ^ source.linqpad source.cs punctuation.definition.method-parameters.end.source.cs
-#                                ^ source.linqpad source.cs constant.numeric.source.cs
+#           ^ source.linqpad source.cs string.quoted.double.cs
+#                            ^ source.linqpad source.cs punctuation.section.group.end.cs
+#                                ^ source.linqpad source.cs constant.numeric.cs
+test.Dump();
+#   ^ source.cs punctuation.accessor.dot.cs
+#          ^ source.cs punctuation.terminator.statement.cs
