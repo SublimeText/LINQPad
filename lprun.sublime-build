@@ -10,7 +10,8 @@
         {
             "name": "Output CSV",
             "cmd": ["lprun", "-format=csv", "$file"],
-            "syntax": "scope:text.advanced_csv"
+            //"syntax": "scope:text.advanced_csv"
+            "syntax": "scope:text.plain"
         },
         
         {
