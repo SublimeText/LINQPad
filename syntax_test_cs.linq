@@ -12,9 +12,9 @@
     <ShowServer>true</ShowServer>
   </Connection>
 </Query>
-#^^^^^^^ source.linqpad text.xml
-#       ^ source.linqpad source.cs - text.xml
+#^^^^^^^^ source.linqpad text.xml - source.cs
 
+# <- source.linqpad source.cs - text.xml
 // comment
 # <- source.linqpad source.cs comment.line.double-slash.cs punctuation.definition.comment.cs
 var test = "Test".IndexOf("e") + 1;

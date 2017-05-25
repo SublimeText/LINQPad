@@ -12,8 +12,8 @@
     <ShowServer>true</ShowServer>
   </Connection>
 </Query>
-#^^^^^^^ source.linqpad text.xml
-#       ^ source.linqpad - text.xml
+#^^^^^^^^ source.linqpad text.xml - source.cs
 
+# <- source.linqpad - text.xml
 // comment
 # <- source.linqpad invalid.illegal.unknown_syntax.linq
