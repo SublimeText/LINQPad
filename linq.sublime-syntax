@@ -7,13 +7,16 @@ scope: source.linqpad # https://www.linqpad.net/
 first_line_match: '^<Query\s+Kind\s*=\s*"[^"]+"\s*/?>$'
 contexts:
   close_query_tag:
-    - match: (</)(Query)\s*(>)\s*
+    - match: (</)(Query)\s*(>)
       captures:
         0: text.xml meta.tag.xml
         1: punctuation.definition.tag.begin.xml
         2: entity.name.tag.localname.xml
         3: punctuation.definition.tag.end.xml
-      pop: true
+      set:
+        - match: \s*
+          scope: text.xml
+          pop: true
   main:
     - match: '^(<)(Query)\s+(Kind)\s*(=)\s*(")'
       captures:
