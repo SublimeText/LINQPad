@@ -2,6 +2,7 @@ import collections
 import functools
 import html
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -158,6 +159,9 @@ class AsyncProcess(object):
 class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
     BLOCK_SIZE = 2**14
     text_queue = collections.deque()
+    text_buffer = ""
+    is_finished = False
+    file_regex = None
     text_queue_proc = None
     text_queue_lock = threading.Lock()
 
@@ -212,6 +216,8 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
         with self.text_queue_lock:
             self.text_queue.clear()
             self.text_queue_proc = None
+            self.text_buffer = ""
+            self.is_finished = False
 
         if kill:
             if self.proc:
@@ -227,6 +233,15 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
         # Default the to the current files directory if no working directory was given
         if working_dir == "" and self.window.active_view() and self.window.active_view().file_name():
             working_dir = os.path.dirname(self.window.active_view().file_name())
+
+        # Save the incoming regex so that we can use it to rewrite errors lines
+        # before they get to the buffer.
+        self.file_regex = re.compile(file_regex, flags=re.MULTILINE)
+
+        # This would be the number of lines that the error messages need to be
+        # offset by, which is calculated by looking at the script. For now it's
+        # hard coded.
+        self.script_offset = 11
 
         self.output_view.settings().set("result_file_regex", file_regex)
         self.output_view.settings().set("result_line_regex", line_regex)
@@ -338,25 +353,62 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
             characters = self.text_queue.popleft()
             is_empty = (len(self.text_queue) == 0)
 
-        self.output_view.run_command(
-            'append',
-            {'characters': characters, 'force': True, 'scroll_to_end': True})
+        # Accumulate the incoming characters, and then see if we need to send
+        # something to the panel yet; this happens when there is at least one
+        # full line in our buffer or the command has finished executing.
+        self.text_buffer += characters
+        nPos = characters.rfind('\n')
+        if nPos >= 0 or self.is_finished:
+            def replacer(match):
+                # Get the line from this message and adjust it.
+                adj_line = str(int(match.group(2)) + self.script_offset)
 
-        if self.show_errors_inline and characters.find('\n') >= 0:
-            errs = self.output_view.find_all_results_with_text()
-            errs_by_file = {}
-            for file, line, column, text in errs:
-                if file not in errs_by_file:
-                    errs_by_file[file] = []
-                errs_by_file[file].append((line, column, text))
-            self.errs_by_file = errs_by_file
+                # Get this message out and replace the number with the new one.
+                msg = match.group(0)
+                sPos = match.start(2) - match.start(0)
+                ePos = match.end(2) - match.start(0)
 
-            self.update_phantoms()
+                return msg[:sPos] + adj_line + msg[ePos:]
+
+            # Do potential command rewriting
+            self.text_buffer = re.sub(self.file_regex, replacer,
+                                      self.text_buffer)
+
+            # If we're not finished with the output, then only write complete
+            # lines out to the view. In that case the trailing line will be
+            # left in our buffer after we're done so for the next read to
+            # complete.
+            unterminated_remainder = ""
+            if not self.is_finished:
+                # nPos is the index of the newline; include it in the slice.
+                unterminated_remainder = self.text_buffer[nPos + 1:]
+                self.text_buffer = self.text_buffer[:nPos + 1]
+
+            self.output_view.run_command(
+                'append',
+                {'characters': self.text_buffer, 'force': True, 'scroll_to_end': True})
+
+            # Save what might have been left.
+            self.text_buffer = unterminated_remainder
+
+            if self.show_errors_inline:
+                errs = self.output_view.find_all_results_with_text()
+                errs_by_file = {}
+                for file, line, column, text in errs:
+                    if file not in errs_by_file:
+                        errs_by_file[file] = []
+                    errs_by_file[file].append((line, column, text))
+                self.errs_by_file = errs_by_file
+
+                self.update_phantoms()
 
         if not is_empty:
             sublime.set_timeout(self.service_text_queue, 1)
 
     def finish(self, proc):
+        # Flag that we're finished so that the handler knows to flush the rest
+        # of the buffered output.
+        self.is_finished=True
         if not self.quiet:
             elapsed = time.time() - proc.start_time
             exit_code = proc.exit_code()
