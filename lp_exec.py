@@ -28,7 +28,6 @@ class AsyncProcess(object):
     Encapsulates subprocess.Popen, forwarding stdout to a supplied
     ProcessListener (on a separate thread)
     """
-
     def __init__(self, cmd, shell_cmd, env, listener, path="", shell=False):
         """ "path" and "shell" are options in build systems """
 
@@ -171,6 +170,9 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
     phantom_sets_by_buffer = {}
     show_errors_inline = True
 
+    _hdr_start = re.compile(r'^<\s*query', flags=re.IGNORECASE)
+    _hdr_end = re.compile(r'</query\s*>', flags=re.IGNORECASE)
+
     def run(
             self,
             cmd=None,
@@ -238,10 +240,22 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
         # before they get to the buffer.
         self.file_regex = re.compile(file_regex, flags=re.MULTILINE)
 
-        # This would be the number of lines that the error messages need to be
-        # offset by, which is calculated by looking at the script. For now it's
-        # hard coded.
-        self.script_offset = 11
+        # Capture the offset into the file that error messages will relate to,
+        # since lprun doesn't take the potential XML header on the file into
+        # account.
+        # 
+        # TODO: This always assumes the current file; it needs to instead try
+        # to get the file from the command about to be executed.
+        if self.window.active_view() and self.window.active_view().file_name():
+            try:
+                self.script_offset = self.get_script_offset(self.window.active_view().file_name())
+            except Exception as err:
+                print("linqpad_exec cannot determine script error offset")
+                print(err)
+                self.script_offset = 0
+        else:
+            print("linqpad_exec cannot determine script error offset")
+
 
         self.output_view.settings().set("result_file_regex", file_regex)
         self.output_view.settings().set("result_line_regex", line_regex)
@@ -311,6 +325,59 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
             self.append_string(None, self.debug_text + "\n")
             if not self.quiet:
                 self.append_string(None, "[Finished]")
+
+    def get_script_offset(self, script_file):
+        """
+        LINQPad scripts may optionally start with a <Query></Query> tag pair to
+        provide configuration information to the processor. When a script has
+        such a header, the error messages that lprun reports are relative to
+        the first non-blank line after the header.
+
+        This method examines the script file in order to determine what offset
+        to add to the reported line numbers from lprun in order to correctly
+        identify the source line.
+        """
+        # True/False indates the file has a header, None if we don't know yet.
+        header = None
+        in_header = False
+        offset = 0
+
+        with open(script_file, 'r') as file:
+            for line in file:
+                # Don't do any special processing on blank lines.
+                line = line.lstrip()
+                if line:    
+                    # See if this line starts a header; can only happen if we
+                    # have not already seen a header start in this file.
+                    if header is None and self._hdr_start.search(line):
+                        header = in_header = True
+
+                    # See if the header ends on this line; can only happen
+                    # while we are inside a header, and can happen on the same
+                    # line that started the header.
+                    if header and in_header and self._hdr_end.search(line):
+                        in_header=False
+
+                    # Every other line is either a header line or a script
+                    # line, depending on the state of the header flag.
+                    # 
+                    # NOTE: This cannot happen on the same line that ended the
+                    # header because lprun ignores code trailing on the same
+                    # line as the header close tag.
+                    elif not in_header:
+                        # We found code before a header; script has no header.
+                        if header is None:
+                            return 0
+
+                        # This is the first code line after the header closed.
+                        return offset
+
+                offset += 1
+
+        # If we found and closed a header, the script starts at the last seen.
+        # offset. Otherwise, no no header was found, the header wasn't closed,
+        # or was all header and no body.
+        return offset if header == False else 0
 
     def is_enabled(self, kill=False, **kwargs):
         if kill:
