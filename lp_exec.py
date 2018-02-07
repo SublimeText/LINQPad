@@ -117,13 +117,13 @@ class AsyncProcess(object):
         if self.proc.stdout:
             threading.Thread(
                 target=self.read_fileno,
-                args=(self.proc.stdout.fileno(), True)
+                args=(self.proc.stdout.fileno(), False)
             ).start()
 
         if self.proc.stderr:
             threading.Thread(
                 target=self.read_fileno,
-                args=(self.proc.stderr.fileno(), False)
+                args=(self.proc.stderr.fileno(), True)
             ).start()
 
     def kill(self):
@@ -147,19 +147,41 @@ class AsyncProcess(object):
     def exit_code(self):
         return self.proc.poll()
 
-    def read_fileno(self, fileno, execute_finished):
+    def read_fileno(self, fileno, is_stderr):
         decoder_cls = codecs.getincrementaldecoder(self.listener.encoding)
         decoder = decoder_cls('replace')
         while True:
+            # Get the data and mormalize newlines, Sublime Text always uses a
+            # single \n separator in memory.
             data = decoder.decode(os.read(fileno, 2**16))
+            data = data.replace('\r\n', '\n').replace('\r', '\n')
 
             if len(data) > 0:
                 if self.listener:
-                    self.listener.on_data(self, data)
+                    # For stderr, accumulate data into our buffer and then let
+                    # full lines through.
+                    if is_stderr:
+                        self.stderr_buffer += data
+                        nPos = self.stderr_buffer.rfind("\n")
+                        if nPos >= 0:
+                            self.listener.on_data(self, self.stderr_buffer[:nPos+1])
+                            self.stderr_buffer = self.stderr_buffer[nPos+1:]
+
+                    else:
+                        self.listener.on_data(self, data)
             else:
                 os.close(fileno)
-                if execute_finished and self.listener:
-                    self.listener.on_finished(self)
+                if self.listener:
+                    # For std_err, see if we need to send any buffered and
+                    # unterminated output
+                    if is_stderr:
+                        if self.stderr_buffer:
+                            self.listener.on_data(self, self.stderr_buffer)
+                            self.stderr_buffer = ""
+                    else:
+                        # Only trigger on_finished for stdout
+                        self.listener.on_finished(self)
+
                 break
 
 
@@ -504,10 +526,6 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
             sublime.status_message("Build finished with %d errors" % len(errs))
 
     def on_data(self, proc, data):
-        # Normalize newlines, Sublime Text always uses a single \n separator
-        # in memory.
-        data = data.replace('\r\n', '\n').replace('\r', '\n')
-
         self.append_string(proc, data)
 
     def on_finished(self, proc):
