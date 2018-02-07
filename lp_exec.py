@@ -28,7 +28,8 @@ class AsyncProcess(object):
     Encapsulates subprocess.Popen, forwarding stdout to a supplied
     ProcessListener (on a separate thread)
     """
-    def __init__(self, cmd, shell_cmd, env, listener, path="", shell=False):
+    def __init__(self, cmd, shell_cmd, env, listener, working_dir="",
+                 file_regex="", path="", shell=False):
         """ "path" and "shell" are options in build systems """
 
         if not shell_cmd and not cmd:
@@ -39,6 +40,13 @@ class AsyncProcess(object):
 
         self.listener = listener
         self.killed = False
+
+        self.stderr_buffer = ""
+        self.working_dir = working_dir
+
+        # Only store the file_regex if one was provided, so we don't try to
+        # rewrite lines if we're not told how to recognize them.
+        self.file_regex = re.compile(file_regex, flags=re.MULTILINE) if file_regex else None
 
         self.start_time = time.time()
 
@@ -202,14 +210,14 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
         # In theory, starting at build 3124 the sublime-build file is allowed
         # to have this key to provide either a command to execute or arguments
         # to the standard target to kill it.
-        # 
+        #
         # At least in build 3143, Sublime doesn't remove this argument from the
         # target before it invokes it in the build, which makes the underlying
         # AsyncProcess instance angry.
-        # 
+        #
         # As an expedient fix, if that argument is present, throw it away at
-        # this point so that it doesn't pass through. 
-        # 
+        # this point so that it doesn't pass through.
+        #
         # Need to investigate this further to see why this might be happening.
         if "cancel" in kwargs:
             kwargs.pop("cancel")
@@ -243,7 +251,7 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
         # Capture the offset into the file that error messages will relate to,
         # since lprun doesn't take the potential XML header on the file into
         # account.
-        # 
+        #
         # TODO: This always assumes the current file; it needs to instead try
         # to get the file from the command about to be executed.
         if self.window.active_view() and self.window.active_view().file_name():
@@ -315,7 +323,8 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
 
         try:
             # Forward kwargs to AsyncProcess
-            self.proc = AsyncProcess(cmd, shell_cmd, merged_env, self, **kwargs)
+            self.proc = AsyncProcess(cmd, shell_cmd, merged_env, self,
+                working_dir, file_regex, **kwargs)
 
             with self.text_queue_lock:
                 self.text_queue_proc = self.proc
@@ -346,7 +355,7 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
             for line in file:
                 # Don't do any special processing on blank lines.
                 line = line.lstrip()
-                if line:    
+                if line:
                     # See if this line starts a header; can only happen if we
                     # have not already seen a header start in this file.
                     if header is None and self._hdr_start.search(line):
@@ -360,7 +369,7 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
 
                     # Every other line is either a header line or a script
                     # line, depending on the state of the header flag.
-                    # 
+                    #
                     # NOTE: This cannot happen on the same line that ended the
                     # header because lprun ignores code trailing on the same
                     # line as the header close tag.
