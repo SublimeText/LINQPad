@@ -15,6 +15,13 @@ import sublime_plugin
 # Code in this file is a modified version of the Default/exec.py in devlopment
 # build 3156.
 
+# For detecting the bits of the XML <Query> header in linq scripts. This is not
+# fully XML compliant since it doesn't verify that the two tags are identically
+# cased.
+_hdr_start = re.compile(r'^<\s*query', flags=re.IGNORECASE)
+_hdr_end = re.compile(r'</query\s*>', flags=re.IGNORECASE)
+
+
 class ProcessListener(object):
     def on_data(self, proc, data):
         pass
@@ -41,6 +48,8 @@ class AsyncProcess(object):
         self.listener = listener
         self.killed = False
 
+        # TODO: Use the working dir to figure out where scripts are if they
+        # don't have an absolute path
         self.stderr_buffer = ""
         self.working_dir = working_dir
 
@@ -117,13 +126,13 @@ class AsyncProcess(object):
         if self.proc.stdout:
             threading.Thread(
                 target=self.read_fileno,
-                args=(self.proc.stdout.fileno(), False)
+                args=(self.proc.stdout.fileno(), False, None)
             ).start()
 
         if self.proc.stderr:
             threading.Thread(
                 target=self.read_fileno,
-                args=(self.proc.stderr.fileno(), True)
+                args=(self.proc.stderr.fileno(), True, self.file_regex)
             ).start()
 
     def kill(self):
@@ -147,7 +156,10 @@ class AsyncProcess(object):
     def exit_code(self):
         return self.proc.poll()
 
-    def read_fileno(self, fileno, is_stderr):
+    def read_fileno(self, fileno, is_stderr, file_regex):
+        if is_stderr and file_regex:
+            offset_cache = dict()
+
         decoder_cls = codecs.getincrementaldecoder(self.listener.encoding)
         decoder = decoder_cls('replace')
         while True:
@@ -159,12 +171,16 @@ class AsyncProcess(object):
             if len(data) > 0:
                 if self.listener:
                     # For stderr, accumulate data into our buffer and then let
-                    # full lines through.
-                    if is_stderr:
+                    # full lines through if we have a file_regex we can use to
+                    # rewrite errors with.
+                    if is_stderr and file_regex:
                         self.stderr_buffer += data
                         nPos = self.stderr_buffer.rfind("\n")
                         if nPos >= 0:
-                            self.listener.on_data(self, self.stderr_buffer[:nPos+1])
+                            self.listener.on_data(self, re.sub(
+                                file_regex,
+                                lambda m: self.rewrite_match(offset_cache, m),
+                                self.stderr_buffer[:nPos+1]))
                             self.stderr_buffer = self.stderr_buffer[nPos+1:]
 
                     else:
@@ -184,13 +200,90 @@ class AsyncProcess(object):
 
                 break
 
+    def rewrite_match(self, offset_cache, match):
+        msg = match.group(0)
+        filename = match.group(1).strip()
+
+        if filename:
+            offset = offset_cache.get(filename, None)
+            if offset is None:
+                try:
+                    offset = self.get_script_offset(filename)
+                except Exception as err:
+                    print(err)
+                    offset = 0
+
+                offset_cache[filename] = offset
+
+            # Get the line from this message and adjust it.
+            adj_line = str(int(match.group(2)) + offset)
+
+            # Get this message out and replace the number with the new one.
+            sPos = match.start(2) - match.start(0)
+            ePos = match.end(2) - match.start(0)
+
+            return msg[:sPos] + adj_line + msg[ePos:]
+
+        return msg
+
+
+    def get_script_offset(self, script_file):
+        """
+        LINQPad scripts may optionally start with a <Query></Query> tag pair to
+        provide configuration information to the processor. When a script has
+        such a header, the error messages that lprun reports are relative to
+        the first non-blank line after the header.
+
+        This method examines the script file in order to determine what offset
+        to add to the reported line numbers from lprun in order to correctly
+        identify the source line.
+        """
+        # True/False indates the file has a header, None if we don't know yet.
+        header = None
+        in_header = False
+        offset = 0
+
+        with open(script_file, 'r') as file:
+            for line in file:
+                # Don't do any special processing on blank lines.
+                line = line.lstrip()
+                if line:
+                    # See if this line starts a header; can only happen if we
+                    # have not already seen a header start in this file.
+                    if header is None and _hdr_start.search(line):
+                        header = in_header = True
+
+                    # See if the header ends on this line; can only happen
+                    # while we are inside a header, and can happen on the same
+                    # line that started the header.
+                    if header and in_header and _hdr_end.search(line):
+                        in_header=False
+
+                    # Every other line is either a header line or a script
+                    # line, depending on the state of the header flag.
+                    #
+                    # NOTE: This cannot happen on the same line that ended the
+                    # header because lprun ignores code trailing on the same
+                    # line as the header close tag.
+                    elif not in_header:
+                        # We found code before a header; script has no header.
+                        if header is None:
+                            return 0
+
+                        # This is the first code line after the header closed.
+                        return offset
+
+                offset += 1
+
+        # If we found and closed a header, the script starts at the last seen.
+        # offset. Otherwise, no no header was found, the header wasn't closed,
+        # or was all header and no body.
+        return offset if header == False else 0
+
 
 class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
     BLOCK_SIZE = 2**14
     text_queue = collections.deque()
-    text_buffer = ""
-    is_finished = False
-    file_regex = None
     text_queue_proc = None
     text_queue_lock = threading.Lock()
 
@@ -199,9 +292,6 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
     errs_by_file = {}
     phantom_sets_by_buffer = {}
     show_errors_inline = True
-
-    _hdr_start = re.compile(r'^<\s*query', flags=re.IGNORECASE)
-    _hdr_end = re.compile(r'</query\s*>', flags=re.IGNORECASE)
 
     def run(
             self,
@@ -248,8 +338,6 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
         with self.text_queue_lock:
             self.text_queue.clear()
             self.text_queue_proc = None
-            self.text_buffer = ""
-            self.is_finished = False
 
         if kill:
             if self.proc:
@@ -265,27 +353,6 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
         # Default the to the current files directory if no working directory was given
         if working_dir == "" and self.window.active_view() and self.window.active_view().file_name():
             working_dir = os.path.dirname(self.window.active_view().file_name())
-
-        # Save the incoming regex so that we can use it to rewrite errors lines
-        # before they get to the buffer.
-        self.file_regex = re.compile(file_regex, flags=re.MULTILINE)
-
-        # Capture the offset into the file that error messages will relate to,
-        # since lprun doesn't take the potential XML header on the file into
-        # account.
-        #
-        # TODO: This always assumes the current file; it needs to instead try
-        # to get the file from the command about to be executed.
-        if self.window.active_view() and self.window.active_view().file_name():
-            try:
-                self.script_offset = self.get_script_offset(self.window.active_view().file_name())
-            except Exception as err:
-                print("linqpad_exec cannot determine script error offset")
-                print(err)
-                self.script_offset = 0
-        else:
-            print("linqpad_exec cannot determine script error offset")
-
 
         self.output_view.settings().set("result_file_regex", file_regex)
         self.output_view.settings().set("result_line_regex", line_regex)
@@ -357,59 +424,6 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
             if not self.quiet:
                 self.append_string(None, "[Finished]")
 
-    def get_script_offset(self, script_file):
-        """
-        LINQPad scripts may optionally start with a <Query></Query> tag pair to
-        provide configuration information to the processor. When a script has
-        such a header, the error messages that lprun reports are relative to
-        the first non-blank line after the header.
-
-        This method examines the script file in order to determine what offset
-        to add to the reported line numbers from lprun in order to correctly
-        identify the source line.
-        """
-        # True/False indates the file has a header, None if we don't know yet.
-        header = None
-        in_header = False
-        offset = 0
-
-        with open(script_file, 'r') as file:
-            for line in file:
-                # Don't do any special processing on blank lines.
-                line = line.lstrip()
-                if line:
-                    # See if this line starts a header; can only happen if we
-                    # have not already seen a header start in this file.
-                    if header is None and self._hdr_start.search(line):
-                        header = in_header = True
-
-                    # See if the header ends on this line; can only happen
-                    # while we are inside a header, and can happen on the same
-                    # line that started the header.
-                    if header and in_header and self._hdr_end.search(line):
-                        in_header=False
-
-                    # Every other line is either a header line or a script
-                    # line, depending on the state of the header flag.
-                    #
-                    # NOTE: This cannot happen on the same line that ended the
-                    # header because lprun ignores code trailing on the same
-                    # line as the header close tag.
-                    elif not in_header:
-                        # We found code before a header; script has no header.
-                        if header is None:
-                            return 0
-
-                        # This is the first code line after the header closed.
-                        return offset
-
-                offset += 1
-
-        # If we found and closed a header, the script starts at the last seen.
-        # offset. Otherwise, no no header was found, the header wasn't closed,
-        # or was all header and no body.
-        return offset if header == False else 0
-
     def is_enabled(self, kill=False, **kwargs):
         if kill:
             return (self.proc is not None) and self.proc.poll()
@@ -451,62 +465,25 @@ class LinqpadExecCommand(sublime_plugin.WindowCommand, ProcessListener):
             characters = self.text_queue.popleft()
             is_empty = (len(self.text_queue) == 0)
 
-        # Accumulate the incoming characters, and then see if we need to send
-        # something to the panel yet; this happens when there is at least one
-        # full line in our buffer or the command has finished executing.
-        self.text_buffer += characters
-        nPos = characters.rfind('\n')
-        if nPos >= 0 or self.is_finished:
-            def replacer(match):
-                # Get the line from this message and adjust it.
-                adj_line = str(int(match.group(2)) + self.script_offset)
+        self.output_view.run_command(
+            'append',
+            {'characters': characters, 'force': True, 'scroll_to_end': True})
 
-                # Get this message out and replace the number with the new one.
-                msg = match.group(0)
-                sPos = match.start(2) - match.start(0)
-                ePos = match.end(2) - match.start(0)
+        if self.show_errors_inline and characters.find('\n') >= 0:
+            errs = self.output_view.find_all_results_with_text()
+            errs_by_file = {}
+            for file, line, column, text in errs:
+                if file not in errs_by_file:
+                    errs_by_file[file] = []
+                errs_by_file[file].append((line, column, text))
+            self.errs_by_file = errs_by_file
 
-                return msg[:sPos] + adj_line + msg[ePos:]
-
-            # Do potential command rewriting
-            self.text_buffer = re.sub(self.file_regex, replacer,
-                                      self.text_buffer)
-
-            # If we're not finished with the output, then only write complete
-            # lines out to the view. In that case the trailing line will be
-            # left in our buffer after we're done so for the next read to
-            # complete.
-            unterminated_remainder = ""
-            if not self.is_finished:
-                # nPos is the index of the newline; include it in the slice.
-                unterminated_remainder = self.text_buffer[nPos + 1:]
-                self.text_buffer = self.text_buffer[:nPos + 1]
-
-            self.output_view.run_command(
-                'append',
-                {'characters': self.text_buffer, 'force': True, 'scroll_to_end': True})
-
-            # Save what might have been left.
-            self.text_buffer = unterminated_remainder
-
-            if self.show_errors_inline:
-                errs = self.output_view.find_all_results_with_text()
-                errs_by_file = {}
-                for file, line, column, text in errs:
-                    if file not in errs_by_file:
-                        errs_by_file[file] = []
-                    errs_by_file[file].append((line, column, text))
-                self.errs_by_file = errs_by_file
-
-                self.update_phantoms()
+            self.update_phantoms()
 
         if not is_empty:
             sublime.set_timeout(self.service_text_queue, 1)
 
     def finish(self, proc):
-        # Flag that we're finished so that the handler knows to flush the rest
-        # of the buffered output.
-        self.is_finished=True
         if not self.quiet:
             elapsed = time.time() - proc.start_time
             exit_code = proc.exit_code()
